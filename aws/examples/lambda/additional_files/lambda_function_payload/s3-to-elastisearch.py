@@ -23,9 +23,7 @@ logger.setLevel(logging.INFO)
 """
 Can Override the global variables using Lambda Environment Parameters
 """
-globalVars = {}
-globalVars['esIndexPrefix'] = "s3-to-es-"
-globalVars['esIndexDocType'] = "s3_to_es_docs"
+globalVars = {'esIndexPrefix': "s3-to-es-", 'esIndexDocType': "s3_to_es_docs"}
 
 
 def s3_connector(aws_auth):
@@ -33,14 +31,13 @@ def s3_connector(aws_auth):
             and (aws_auth['role_session'] is None or aws_auth['role_session'] == "None"):
         try:
             session = boto3.session.Session(profile_name=aws_auth['profile_name'])
-            # Will retry any method call at most 3 time(s)
-            s3 = session.client(service_name=aws_auth['client'],
-                                region_name=aws_auth['region'],
-                                config=Config(retries={'max_attempts': 3})
-                                )
-            return s3
+            return session.client(
+                service_name=aws_auth['client'],
+                region_name=aws_auth['region'],
+                config=Config(retries={'max_attempts': 3}),
+            )
         except Exception as err:
-            print("Failed to create a boto3 client connection to S3:\n", str(err))
+            print("Failed to create a boto3 client connection to S3:\n", err)
             logger.error('ERROR: Failed to create a boto3 client connection to S3')
             return False
     elif (aws_auth['profile_name'] is None or aws_auth['profile_name'] == "None") \
@@ -57,18 +54,22 @@ def s3_connector(aws_auth):
                 RoleArn="{0}".format(aws_auth['role_name']),
                 RoleSessionName='{0}'.format(aws_auth['role_session'])
             )
-            # can be used ay name, but need to add restriction for the name!
-            s3 = session.client(aws_access_key_id=assumed_role_object['Credentials']['AccessKeyId'],
-                                aws_secret_access_key=assumed_role_object['Credentials']['SecretAccessKey'],
-                                aws_session_token=assumed_role_object['Credentials']['SessionToken'],
-                                service_name=aws_auth['client'],
-                                region_name=aws_auth['region'],
-                                config=Config(retries={'max_attempts': 3})
-                                )
-
-            return s3
+            return session.client(
+                aws_access_key_id=assumed_role_object['Credentials'][
+                    'AccessKeyId'
+                ],
+                aws_secret_access_key=assumed_role_object['Credentials'][
+                    'SecretAccessKey'
+                ],
+                aws_session_token=assumed_role_object['Credentials'][
+                    'SessionToken'
+                ],
+                service_name=aws_auth['client'],
+                region_name=aws_auth['region'],
+                config=Config(retries={'max_attempts': 3}),
+            )
         except Exception as err:
-            print("Failed to create a boto3 client connection to S3:\n", str(err))
+            print("Failed to create a boto3 client connection to S3:\n", err)
             logger.error('ERROR: Failed to create a boto3 client connection to S3')
             return False
     else:
@@ -77,36 +78,31 @@ def s3_connector(aws_auth):
 
 
 def s3_bucket(aws_auth, s3_bucket_name):
-    s3_bucket_status = False
-    s3 = s3_connector(aws_auth)
-    if s3:
+    if s3 := s3_connector(aws_auth):
         try:
             s3.head_bucket(Bucket=s3_bucket_name)
-            print("A bucket {} is already exists!".format(s3_bucket_name))
-            s3_bucket_status = True
-            return s3_bucket_status
+            print(f"A bucket {s3_bucket_name} is already exists!")
+            return True
         except botocore.exceptions.ClientError as e:
             error_code = int(e.response['Error']['Code'])
             if error_code == 403:
-                print("Private {} bucket. Forbidden Access!".format(s3_bucket_name))
+                print(f"Private {s3_bucket_name} bucket. Forbidden Access!")
                 logger.error('ERROR: Private {0} Bucket. Forbidden Access!'.format(s3_bucket_name))
             elif error_code == 404:
-                print("The {} bucket does not exist!".format(s3_bucket_name))
+                print(f"The {s3_bucket_name} bucket does not exist!")
                 logger.error('ERROR: The {0} bucket does not exist!'.format(s3_bucket_name))
-            s3_bucket_status = False
-            return s3_bucket_status
+            return False
     else:
         exit(-1)
 
-    return s3_bucket_status
+    return False
 
 
 def s3_objects(aws_auth, s3_bucket_name):
     s3objects = []
 
     s3 = s3_connector(aws_auth)
-    bucket_name = s3_bucket(aws_auth, s3_bucket_name)
-    if bucket_name:
+    if bucket_name := s3_bucket(aws_auth, s3_bucket_name):
         try:
             for key in s3.list_objects(Bucket=s3_bucket_name)['Contents']:
                 # print(key['Key'])
@@ -132,7 +128,7 @@ def s3_objects(aws_auth, s3_bucket_name):
 def sending_data_to_elastisearch(es_url, docData):
     # Index each line to ES Domain
     index_name = globalVars['esIndexPrefix'] + str(datetime.date.today().year) + '-' + str(datetime.date.today().month)
-    elastic_searh_url = es_url + '/' + index_name + '/' + globalVars['esIndexDocType']
+    elastic_searh_url = f'{es_url}/{index_name}/' + globalVars['esIndexDocType']
     try:
         headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
         http = urllib3.PoolManager()
@@ -152,10 +148,12 @@ def sending_data_to_elastisearch(es_url, docData):
                                                                                 response.data.decode('utf-8')))
             logger.info('INFO: Successfully inserted element into ES')
         elif response.status == 405:
-            logger.error('ERROR: Something is wrong with sending DATA: \n\t {}'.format(response.data.decode('utf-8')))
+            logger.error(
+                f"ERROR: Something is wrong with sending DATA: \n\t {response.data.decode('utf-8')}"
+            )
             exit(1)
         else:
-            logger.error('FAILURE: Got an error: \n\t {}'.format(response.data.decode('utf-8')))
+            logger.error(f"FAILURE: Got an error: \n\t {response.data.decode('utf-8')}")
             exit(1)
     except Exception as e:
         logger.error('ERROR: {0}'.format(str(e)))
@@ -173,9 +171,10 @@ def pushing_locally(aws_auth, s3_bucket_name, es_url):
         for row in reader:
             json_out = json.loads(json.dumps(row))
 
-            docData = {}
-            docData['content'] = str(json.dumps(json_out))
-            docData['createdDate'] = '{}'.format(datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
+            docData = {'content': json.dumps(json_out)}
+            docData[
+                'createdDate'
+            ] = f'{datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%fZ")}'
 
             sending_data_to_elastisearch(es_url, docData)
 
@@ -195,7 +194,7 @@ def lambda_handler(event, context):
     s3_bucket_name = os.environ['aws_s3_bucket_name']
     es_url = os.environ['elasticsearch_url']
 
-    logger.info("Received event: " + json.dumps(event, indent=2))
+    logger.info(f"Received event: {json.dumps(event, indent=2)}")
 
     s3objects = s3_objects(aws_auth, s3_bucket_name)
 
@@ -208,9 +207,10 @@ def lambda_handler(event, context):
         for row in reader:
             json_out = json.loads(json.dumps(row))
 
-            docData = {}
-            docData['content'] = str(json.dumps(json_out))
-            docData['createdDate'] = '{}'.format(datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
+            docData = {'content': json.dumps(json_out)}
+            docData[
+                'createdDate'
+            ] = f'{datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%fZ")}'
 
             sending_data_to_elastisearch(es_url, docData)
     logger.info('SUCCESS: Successfully indexed the entire doc into ElastiSearch')
@@ -266,4 +266,4 @@ if __name__ == '__main__':
         pushing_locally(aws_auth, s3_bucket_name, es_url)
 
         end__time = round(time.time() - start__time, 2)
-        print("--- %s seconds ---" % end__time)
+        print(f"--- {end__time} seconds ---")
